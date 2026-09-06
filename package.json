@@ -1,6 +1,7 @@
 {
   "type": "module",
   "dependencies": {
+    "express": "^5.2.1",
     "ioredis": "^6.0.0",
     "pg": "^8.23.0"
   }
