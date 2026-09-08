@@ -1,7 +1,11 @@
 import redis from "../config/redis.js";
+import pool from "../config/db.js";
+import dotenv from "dotenv";
 
-const STREAM_KEY = "task:stream";
-const GROUP_NAME = "worker-group";
+dotenv.config();
+
+const STREAM_KEY = process.env.STREAM_KEY;
+const GROUP_NAME = process.env.GROUP_NAME;
 const CONSUMERE = 1;
 const MAX_ATTEMPTS = 3;
 
@@ -18,11 +22,13 @@ try {
 
 async function processJob(messageId, rawFields) {
   try {
-    const fields = {}
-    for(let i = 0; i < rawFields.length; i += 2){
-      fields[rawFields[i]] = rawFields[i + 1]
+    const fields = {};
+    for (let i = 0; i < rawFields.length; i += 2) {
+      fields[rawFields[i]] = rawFields[i + 1];
     }
+    const job_id = fields.job_id;
     const currentAttempt = fields.attempts ? parseInt(fields.attempts, 10) : 0;
+    const startTime = performance.now();
     try {
       const response = await fetch(fields.target_url, {
         method: "POST",
@@ -34,10 +40,24 @@ async function processJob(messageId, rawFields) {
       if (!response.ok) {
         throw new Error(`Request failed with status ${response.status}`);
       }
+      const durationMs = Math.round(performance.now() - startTime);
+      await pool.query(
+        "INSERT INTO job_attempts (job_id, attempt_number, response_status_code, execution_duration_ms, error_message) VALUES ($1, $2, $3, $4, $5);",
+        [job_id, currentAttempt + 1, response.status, durationMs, null],
+      );
+      await pool.query(
+        "UPDATE jobs SET status = 'COMPLETED', updated_at = NOW() WHERE id = $1",
+        [job_id],
+      );
       await redis.xack(STREAM_KEY, GROUP_NAME, messageId);
       console.log(`Job ${messageId} succeeded`);
     } catch (error) {
       const nextAttempt = currentAttempt + 1;
+      const durationMs = Math.round(performance.now() - startTime);
+      await pool.query(
+        "INSERT INTO job_attempts (job_id, attempt_number, response_status_code, execution_duration_ms, error_message) VALUES ($1, $2, $3, $4, $5);",
+        [job_id, nextAttempt, null, durationMs, error.message],
+      );
       if (nextAttempt >= MAX_ATTEMPTS) {
         await redis.xadd(
           "task:dlq",
@@ -53,6 +73,10 @@ async function processJob(messageId, rawFields) {
           "error",
           error.message,
         );
+        await pool.query(
+          "UPDATE jobs SET status = 'DEAD_LETTER', updated_at = NOW() WHERE id = $1",
+          [job_id],
+        );
         await redis.xack(STREAM_KEY, GROUP_NAME, messageId);
         console.log(`Job ${messageId} moved to DLQ`);
       } else {
@@ -63,6 +87,7 @@ async function processJob(messageId, rawFields) {
           "task:delayed",
           wakeUpTime,
           JSON.stringify({
+            job_id: fields.job_id,
             service: fields.service,
             target_url: fields.target_url,
             payload: fields.payload,
@@ -76,9 +101,8 @@ async function processJob(messageId, rawFields) {
       }
     }
     console.log(`Processing Job: ${messageId}`, fields);
-    
   } catch (error) {
-    console.log("Error occured with error: ", error.message)
+    console.log("Error occured with error: ", error.message);
   }
 }
 
@@ -101,7 +125,7 @@ async function startWorker() {
       if (result && result.length > 0) {
         const [stream, messages] = result[0];
         for (const [messageId, rawFields] of messages) {
-          await processJob(messageId, rawFields)
+          await processJob(messageId, rawFields);
         }
       }
     } catch (error) {
@@ -120,6 +144,8 @@ async function pollDelayJobs() {
       await redis.xadd(
         STREAM_KEY,
         "*",
+        "job_id", 
+        String(job.job_id),
         "service",
         job.service,
         "target_url",
@@ -142,24 +168,25 @@ async function pollDelayJobs() {
 async function recoverStuckjobs() {
   try {
     const result = await redis.xautoclaim(
-      STREAM_KEY, 
-      GROUP_NAME, 
+      STREAM_KEY,
+      GROUP_NAME,
       CONSUMERE,
       5000,
       "0-0",
-      "COUNT", 10
-    )
-    const [nextStartId, claimedMessage, deletedMessageId] = result
-    if (claimedMessage.length === 0) return
+      "COUNT",
+      10,
+    );
+    const [nextStartId, claimedMessage, deletedMessageId] = result;
+    if (claimedMessage.length === 0) return;
     for (const [messageId, rawFields] of claimedMessage) {
       console.log(`Recovered abandoned job: ${messageId}`);
-      await processJob(messageId, rawFields)
+      await processJob(messageId, rawFields);
     }
   } catch (error) {
-    console.log(error.message)
+    console.log(error.message);
   }
 }
 
 startWorker();
 setInterval(pollDelayJobs, 1000);
-setInterval(recoverStuckjobs, 10000)
+setInterval(recoverStuckjobs, 10000);
