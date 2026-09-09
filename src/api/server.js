@@ -1,6 +1,7 @@
 import express from "express";
 import redis from "../config/redis.js";
 import pool from "../config/db.js";
+import rateLimiter from "./middlewares/ratelimiter.js";
 
 const app = express();
 const port = 3000;
@@ -12,7 +13,7 @@ app.post("/", (req, res) => {
   res.end();
 });
 
-app.post("/v1/jobs", async (req, res) => {
+app.post("/v1/jobs", rateLimiter, async (req, res) => {
   try {
     const idempotencyKey = req.headers["idempotency-key"];
     const { service, target_url, payload } = req.body;

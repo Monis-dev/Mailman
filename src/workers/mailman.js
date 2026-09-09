@@ -1,5 +1,10 @@
 import redis from "../config/redis.js";
 import pool from "../config/db.js";
+import {
+  canExecute,
+  recordSuccess,
+  recordFailure,
+} from "../utils/circuitBreaker.js";
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -8,6 +13,7 @@ const STREAM_KEY = process.env.STREAM_KEY;
 const GROUP_NAME = process.env.GROUP_NAME;
 const CONSUMERE = 1;
 const MAX_ATTEMPTS = 3;
+let isPolling = false
 
 try {
   await redis.xgroup("CREATE", STREAM_KEY, GROUP_NAME, "0", "MKSTREAM");
@@ -21,15 +27,37 @@ try {
 }
 
 async function processJob(messageId, rawFields) {
+  if (isPolling) return
   try {
     const fields = {};
     for (let i = 0; i < rawFields.length; i += 2) {
       fields[rawFields[i]] = rawFields[i + 1];
     }
     const job_id = fields.job_id;
+    const domain = new URL(fields.target_url).hostname;
     const currentAttempt = fields.attempts ? parseInt(fields.attempts, 10) : 0;
     const startTime = performance.now();
     try {
+      const isAllowed = await canExecute(domain);
+      if (!isAllowed) {
+        console.log(
+          `[CIRCUIT OPEN] Skipping ${domain} to prevent worker starvation.`,
+        );
+        const wakeUpTime = Date.now() + 30000;
+        await redis.zadd(
+          "task:delayed",
+          wakeUpTime,
+          JSON.stringify({
+            job_id: fields.job_id,
+            service: fields.service,
+            target_url: fields.target_url,
+            payload: fields.payload,
+            attempts: currentAttempt,
+          }),
+        );
+        await redis.xack(STREAM_KEY, GROUP_NAME, messageId);
+        return;
+      }
       const response = await fetch(fields.target_url, {
         method: "POST",
         headers: {
@@ -49,6 +77,7 @@ async function processJob(messageId, rawFields) {
         "UPDATE jobs SET status = 'COMPLETED', updated_at = NOW() WHERE id = $1",
         [job_id],
       );
+      await recordSuccess(domain);
       await redis.xack(STREAM_KEY, GROUP_NAME, messageId);
       console.log(`Job ${messageId} succeeded`);
     } catch (error) {
@@ -58,6 +87,7 @@ async function processJob(messageId, rawFields) {
         "INSERT INTO job_attempts (job_id, attempt_number, response_status_code, execution_duration_ms, error_message) VALUES ($1, $2, $3, $4, $5);",
         [job_id, nextAttempt, null, durationMs, error.message],
       );
+      await recordFailure(domain);
       if (nextAttempt >= MAX_ATTEMPTS) {
         await redis.xadd(
           "task:dlq",
@@ -135,6 +165,8 @@ async function startWorker() {
 }
 
 async function pollDelayJobs() {
+  if (isPolling) return
+  isPolling = true
   try {
     const now = Date.now();
     const readyJobs = await redis.zrangebyscore("task:delayed", 0, now);
@@ -144,7 +176,7 @@ async function pollDelayJobs() {
       await redis.xadd(
         STREAM_KEY,
         "*",
-        "job_id", 
+        "job_id",
         String(job.job_id),
         "service",
         job.service,
@@ -162,10 +194,14 @@ async function pollDelayJobs() {
     console.log(`Job moved to the main stream: ${STREAM_KEY}`);
   } catch (error) {
     console.log(`Unable to move the job to main stream`);
+  } finally {
+    isPolling = false
   }
 }
 
 async function recoverStuckjobs() {
+  if (isPolling) return
+  isPolling = true
   try {
     const result = await redis.xautoclaim(
       STREAM_KEY,
@@ -184,6 +220,8 @@ async function recoverStuckjobs() {
     }
   } catch (error) {
     console.log(error.message);
+  } finally {
+    isPolling = false
   }
 }
 
