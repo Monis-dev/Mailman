@@ -5,6 +5,8 @@ import {
   recordSuccess,
   recordFailure,
 } from "../utils/circuitBreaker.js";
+import { jobDurationSeconds, jobsProcessedTotal } from "../utils/metrics.js";
+import logger from "../utils/logger.js";
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -13,7 +15,7 @@ const STREAM_KEY = process.env.STREAM_KEY;
 const GROUP_NAME = process.env.GROUP_NAME;
 const CONSUMERE = 1;
 const MAX_ATTEMPTS = 3;
-let isPolling = false
+let isPolling = false;
 
 try {
   await redis.xgroup("CREATE", STREAM_KEY, GROUP_NAME, "0", "MKSTREAM");
@@ -27,7 +29,6 @@ try {
 }
 
 async function processJob(messageId, rawFields) {
-  if (isPolling) return
   try {
     const fields = {};
     for (let i = 0; i < rawFields.length; i += 2) {
@@ -40,9 +41,6 @@ async function processJob(messageId, rawFields) {
     try {
       const isAllowed = await canExecute(domain);
       if (!isAllowed) {
-        console.log(
-          `[CIRCUIT OPEN] Skipping ${domain} to prevent worker starvation.`,
-        );
         const wakeUpTime = Date.now() + 30000;
         await redis.zadd(
           "task:delayed",
@@ -56,6 +54,7 @@ async function processJob(messageId, rawFields) {
           }),
         );
         await redis.xack(STREAM_KEY, GROUP_NAME, messageId);
+        logger.warn("CIRCUIT_SKIPPED", {domain, job_id})
         return;
       }
       const response = await fetch(fields.target_url, {
@@ -69,6 +68,10 @@ async function processJob(messageId, rawFields) {
         throw new Error(`Request failed with status ${response.status}`);
       }
       const durationMs = Math.round(performance.now() - startTime);
+      jobDurationSeconds.observe(
+        { service: fields.service, domain },
+        durationMs / 1000,
+      );
       await pool.query(
         "INSERT INTO job_attempts (job_id, attempt_number, response_status_code, execution_duration_ms, error_message) VALUES ($1, $2, $3, $4, $5);",
         [job_id, currentAttempt + 1, response.status, durationMs, null],
@@ -79,10 +82,20 @@ async function processJob(messageId, rawFields) {
       );
       await recordSuccess(domain);
       await redis.xack(STREAM_KEY, GROUP_NAME, messageId);
-      console.log(`Job ${messageId} succeeded`);
+
+      jobsProcessedTotal.inc({ service: fields.service, status: "COMPLETED" });
+
+      logger.info("JOB_COMPLETED", {
+        job_id: job_id,
+        durationMs: durationMs,
+      });
     } catch (error) {
       const nextAttempt = currentAttempt + 1;
       const durationMs = Math.round(performance.now() - startTime);
+      jobDurationSeconds.observe(
+        { service: fields.service, domain },
+        durationMs / 1000,
+      );
       await pool.query(
         "INSERT INTO job_attempts (job_id, attempt_number, response_status_code, execution_duration_ms, error_message) VALUES ($1, $2, $3, $4, $5);",
         [job_id, nextAttempt, null, durationMs, error.message],
@@ -108,7 +121,15 @@ async function processJob(messageId, rawFields) {
           [job_id],
         );
         await redis.xack(STREAM_KEY, GROUP_NAME, messageId);
-        console.log(`Job ${messageId} moved to DLQ`);
+        jobsProcessedTotal.inc({
+          service: fields.service,
+          status: "DEAD_LETTER",
+        });
+        logger.error("JOB_DEAD_LETTER", {
+          job_id: job_id,
+          durationMs: durationMs,
+          error: error.message,
+        });
       } else {
         const delay =
           1000 * 2 ** currentAttempt + Math.floor(Math.random() * 500);
@@ -165,8 +186,8 @@ async function startWorker() {
 }
 
 async function pollDelayJobs() {
-  if (isPolling) return
-  isPolling = true
+  if (isPolling) return;
+  isPolling = true;
   try {
     const now = Date.now();
     const readyJobs = await redis.zrangebyscore("task:delayed", 0, now);
@@ -195,13 +216,13 @@ async function pollDelayJobs() {
   } catch (error) {
     console.log(`Unable to move the job to main stream`);
   } finally {
-    isPolling = false
+    isPolling = false;
   }
 }
 
 async function recoverStuckjobs() {
-  if (isPolling) return
-  isPolling = true
+  if (isPolling) return;
+  isPolling = true;
   try {
     const result = await redis.xautoclaim(
       STREAM_KEY,
@@ -221,7 +242,7 @@ async function recoverStuckjobs() {
   } catch (error) {
     console.log(error.message);
   } finally {
-    isPolling = false
+    isPolling = false;
   }
 }
 
