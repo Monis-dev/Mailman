@@ -4,6 +4,8 @@ import dotenv from "dotenv";
 dotenv.config();
 
 const pool = new pg.Pool({
+  max: 50,
+  idleTimeoutMillis: 30000,
   host: process.env.HOST || "localhost",
   port: Number(process.env.PORT) || 5432,
   user: process.env.USER || "postgres",

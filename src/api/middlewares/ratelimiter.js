@@ -1,4 +1,7 @@
 import redis from "../../config/redis.js";
+import dotenv from "dotenv"
+
+dotenv.config();
 
 async function rateLimiter(req, res, next) {
   try {
@@ -6,9 +9,10 @@ async function rateLimiter(req, res, next) {
     const key = `ratelimit:${clientIp}`;
     const now = Date.now();
     const windowStart = now - 10000;
+    const limit = Number(process.env.RATE_LIMIT_MAX) || 10;
     await redis.zremrangebyscore(key, 0, windowStart); // Removes all elements in the sorted set stored at key with a score between min and max (inclusive).
     const requestCount = await redis.zcard(key); //Returns the sorted set cardinality (number of elements) of the sorted set stored at key.
-    if (requestCount >= 10) {
+    if (requestCount >= limit) {
       console.log("Client has used up there quota!");
       res.setHeader("Retry-After", 10);
       return res.status(429).json({ error: "Too many Request. Chill Bro!" });
