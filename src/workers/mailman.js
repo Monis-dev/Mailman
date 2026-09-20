@@ -8,6 +8,10 @@ import {
 import { jobDurationSeconds, jobsProcessedTotal } from "../utils/metrics.js";
 import logger from "../utils/logger.js";
 import dotenv from "dotenv";
+import process from "node:process";
+import cryptop from "node:crypto";
+
+console.log("Worker ID: ", process.pid);
 
 dotenv.config();
 
@@ -16,6 +20,8 @@ const GROUP_NAME = process.env.GROUP_NAME;
 const CONSUMERE = 1;
 const MAX_ATTEMPTS = 3;
 let isPolling = false;
+const WEBHOOK_SECRET =
+  process.env.WEBHOOK_SECRET || "whsec_default_secrete_key";
 
 try {
   await redis.xgroup("CREATE", STREAM_KEY, GROUP_NAME, "0", "MKSTREAM");
@@ -54,13 +60,20 @@ async function processJob(messageId, rawFields) {
           }),
         );
         await redis.xack(STREAM_KEY, GROUP_NAME, messageId);
-        logger.warn("CIRCUIT_SKIPPED", {domain, job_id})
+        logger.warn("CIRCUIT_SKIPPED", { domain, job_id });
         return;
       }
+      const timestamp = Date.now();
+      const signature = crypto
+        .createHmac("sha256", WEBHOOK_SECRET)
+        .update(`${timestamp}.${fields.payload}`)
+        .digest("hex");
       const response = await fetch(fields.target_url, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          "X-Relay-Signature": `t=${timestamp},v1=${signature}`,
+          "X-Relay-Timestamp": String(timestamp)
         },
         body: fields.payload,
       });
