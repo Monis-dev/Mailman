@@ -6,7 +6,7 @@ const runId = Date.now()
 async function runBenchmark() {
   const result = await autocannon({
     url: "http://localhost:3000/v1/jobs",
-    connections: 50,
+    connections: 70,
     duration: 20,
     method: "POST",
 
@@ -15,7 +15,7 @@ async function runBenchmark() {
         counter++;
         client.setHeaders({
           "content-type": "application/json",
-          "Idempotency-Key": `bench-${runId}-${counter++}`,
+          "Idempotency-Key": `bench-${runId}-${counter++}`, //bench-${runId}-${counter++}
         });
 
         client.setBody(
