@@ -1,5 +1,4 @@
 import crypto from "node:crypto";
-import Authorize from "../api/middlewares/auth";
 class Mailman {
   constructor({
     endpoint = "http://localhost:3000",
@@ -19,6 +18,7 @@ class Mailman {
       ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
     };
     for (let i = 0; i < this.maxRetries; i++) {
+      const delayInMs = 200 * (i + 1);
       try {
         const response = await fetch(url, {
           method: options.method || "GET",
@@ -26,20 +26,22 @@ class Mailman {
           body: options.body,
           signal: AbortSignal.timeout(this.timeout),
         });
-        if (response.status === 503) {
-          delayInMs = 200 * (i + 1);
-        }
         if (response.ok) {
-          return response.json();
+          return await response.json();
         }
-        if (i === this.maxRetries - 1) {
-          throw error;
+        if (response.status >= 400 && response.status < 500) {
+          const errText = await response.text().catch(() => "");
+          throw new Error(`Client Error (${response.status}): ${errText}`);
         }
         await new Promise((resolve) => setTimeout(resolve, delayInMs));
       } catch (error) {
-        throw new Error(
-          "RelayEngine request failed after " + this.maxRetries + " attempts",
-        );
+        if (
+          error.message.startsWith("Client Error") ||
+          i === this.maxRetries - 1
+        ) {
+          throw error;
+        }
+        await new Promise((resolve) => setTimeout(resolve, delayInMs));
       }
     }
   }
@@ -50,6 +52,7 @@ class Mailman {
     secret,
     toleranceInSeconds = 300,
   }) {
+    if (!signatureHeader || !secret) return false;
     const part = Object.fromEntries(
       signatureHeader.split(",").map((part) => part.split("=")),
     );
@@ -66,6 +69,32 @@ class Mailman {
     const bufExpected = Buffer.from(clientSignature, "hex");
     if (bufRecevied.length !== bufExpected.length) return false;
     return crypto.timingSafeEqual(bufRecevied, bufExpected);
+  }
+
+  static createReceiverMiddleware({ secret, store = new Set() } = {}) {
+    return (req, res, next) => {
+      const signatureHeader = req.headers["x-relay-signature"];
+      const idempKey = req.headers["x-idempotency-key"];
+      if (secret) {
+        const response = this.verifySignature({
+          payload: JSON.stringify(req.body),
+          signatureHeader,
+          secret,
+        });
+        if (!response) {
+          return res.status(401).json({ error: "Invalid webhook signature" });
+        }
+      }
+      if (idempKey && store.has(idempKey)) {
+        console.log("Job already executed on previous attempt!");
+        return res
+          .status(200)
+          .json({ status: "already_processed", deduped: true });
+      }
+
+      store.add(idempKey);
+      return next();
+    };
   }
 
   async dispatch({ service, target_url, payload, idempotencyKey }) {

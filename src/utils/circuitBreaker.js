@@ -7,6 +7,7 @@ async function canExecute(domain) {
     return true;
   } catch (error) {
     console.log("Unable to fetcht the state of circuit error: ", error.message);
+    return true
   }
 }
 

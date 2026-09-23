@@ -22,7 +22,7 @@ async function rateLimiter(req, res, next) {
     next();
   } catch (error) {
     console.log("Unable to make connection with client");
-    res.status(400).json({ error: "Unable to make connection with client" });
+    next()
   }
 }
 

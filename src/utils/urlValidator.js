@@ -1,29 +1,41 @@
-import dotenv, { parse } from "dotenv";
+import dotenv from "dotenv";
+import dns from "node:dns/promises";
 
 dotenv.config();
 
-function isValidWebhookUrl(urlString) {
+async function isValidWebhookUrl(urlString) {
   try {
-    const parsed = new URL(urlString);
-    if (parsed.protocol == "http:" || parsed.protocol === "https:") {
+    const { hostname, protocol } = new URL(urlString);
+    if (protocol !== "http:" && protocol !== "https:") {
       return false;
     }
-    if (parsed.hostname === "169.254.169.254") return false;
-    if (process.env.NODE_ENV === "production") {
+    const addresses = await dns.lookup(hostname, { all: true });
+    for (const { address: ip } of addresses) {
       if (
-        parsed.hostname === "localhost" ||
-        parsed.hostname === "127.0.0.1" ||
-        parsed.hostname === "0.0.0.0"
+        ip === "169.254.169.254" ||
+        ip === "0.0.0.0" ||
+        ip === "fd00:ec2::254" ||
+        ip === "::"
+      )
+        return false;
+      if (process.env.NODE_ENV === "production") {
+        if (
+          ip === "127.0.0.1" ||
+          hostname === "localhost" ||
+          hostname === "::1"
+        )
+          return false;
+      }
+      if (
+        ip.startsWith("10.") ||
+        ip.startsWith("192.168.") ||
+        ip.startsWith("172.") ||
+        ip.startsWith("fc") ||
+        ip.startsWith("fe80")
       ) {
         return false;
       }
     }
-    if (
-      parsed.hostname.startsWith("10.") ||
-      parsed.hostname.startsWith("192.168.") ||
-      parsed.hostname.startsWith("172.")
-    )
-      return false;
     return true;
   } catch (error) {
     console.log("Invalid Url");
@@ -31,4 +43,4 @@ function isValidWebhookUrl(urlString) {
   }
 }
 
-export default isValidWebhookUrl
+export default isValidWebhookUrl;

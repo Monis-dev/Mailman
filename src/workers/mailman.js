@@ -6,10 +6,11 @@ import {
   recordFailure,
 } from "../utils/circuitBreaker.js";
 import { jobDurationSeconds, jobsProcessedTotal } from "../utils/metrics.js";
+import isValidWebhookUrl from "../utils/urlValidator.js";
 import logger from "../utils/logger.js";
 import dotenv from "dotenv";
 import process from "node:process";
-import cryptop from "node:crypto";
+import crypto from "node:crypto";
 
 console.log("Worker ID: ", process.pid);
 
@@ -17,9 +18,10 @@ dotenv.config();
 
 const STREAM_KEY = process.env.STREAM_KEY;
 const GROUP_NAME = process.env.GROUP_NAME;
-const CONSUMERE = 1;
+const CONSUMER_NAME = process.env.CONSUMER_NAME || `worker-${process.pid}-${crypto.randomBytes(4).toString("hex")}`
 const MAX_ATTEMPTS = 3;
-let isPolling = false;
+let isPollingDelay = false;
+let isRecovering = false;
 const WEBHOOK_SECRET =
   process.env.WEBHOOK_SECRET || "whsec_default_secrete_key";
 
@@ -52,6 +54,7 @@ async function processJob(messageId, rawFields) {
           "task:delayed",
           wakeUpTime,
           JSON.stringify({
+            idempotency_key: fields.idempotency_key,
             job_id: fields.job_id,
             service: fields.service,
             target_url: fields.target_url,
@@ -68,14 +71,23 @@ async function processJob(messageId, rawFields) {
         .createHmac("sha256", WEBHOOK_SECRET)
         .update(`${timestamp}.${fields.payload}`)
         .digest("hex");
+      const isSafeUrl = await isValidWebhookUrl(fields.target_url)
+      if (!isSafeUrl) {
+        throw new Error(
+          "SSRF Guard: Target URL resolved to a blocked IP address",
+        );
+      }
       const response = await fetch(fields.target_url, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          "X-Idempotency-Key": fields.idempotency_key || fields.job_id,
+          "X-Attempt-Number": String(currentAttempt + 1),
           "X-Relay-Signature": `t=${timestamp},v1=${signature}`,
-          "X-Relay-Timestamp": String(timestamp)
+          "X-Relay-Timestamp": String(timestamp),
         },
         body: fields.payload,
+        redirect: "manual",
       });
       if (!response.ok) {
         throw new Error(`Request failed with status ${response.status}`);
@@ -118,6 +130,8 @@ async function processJob(messageId, rawFields) {
         await redis.xadd(
           "task:dlq",
           "*",
+          "idempotency_key",
+          fields.idempotency_key || "",
           "service",
           fields.service,
           "target_url",
@@ -151,6 +165,7 @@ async function processJob(messageId, rawFields) {
           "task:delayed",
           wakeUpTime,
           JSON.stringify({
+            idempotency_key: fields.idempotency_key,
             job_id: fields.job_id,
             service: fields.service,
             target_url: fields.target_url,
@@ -176,7 +191,7 @@ async function startWorker() {
       const result = await redis.xreadgroup(
         "GROUP",
         GROUP_NAME,
-        CONSUMERE,
+        CONSUMER_NAME,
         "BLOCK",
         2000,
         "COUNT",
@@ -199,8 +214,8 @@ async function startWorker() {
 }
 
 async function pollDelayJobs() {
-  if (isPolling) return;
-  isPolling = true;
+  if (isPollingDelay) return;
+  isPollingDelay = true;
   try {
     const now = Date.now();
     const readyJobs = await redis.zrangebyscore("task:delayed", 0, now);
@@ -210,6 +225,8 @@ async function pollDelayJobs() {
       await redis.xadd(
         STREAM_KEY,
         "*",
+        "idempotency_key",
+        job.idempotency_key || "",
         "job_id",
         String(job.job_id),
         "service",
@@ -229,18 +246,18 @@ async function pollDelayJobs() {
   } catch (error) {
     console.log(`Unable to move the job to main stream`);
   } finally {
-    isPolling = false;
+    isPollingDelay = false;
   }
 }
 
 async function recoverStuckjobs() {
-  if (isPolling) return;
-  isPolling = true;
+  if (isRecovering) return;
+  isRecovering = true;
   try {
     const result = await redis.xautoclaim(
       STREAM_KEY,
       GROUP_NAME,
-      CONSUMERE,
+      CONSUMER_NAME,
       5000,
       "0-0",
       "COUNT",
@@ -255,7 +272,7 @@ async function recoverStuckjobs() {
   } catch (error) {
     console.log(error.message);
   } finally {
-    isPolling = false;
+    isRecovering = false;
   }
 }
 

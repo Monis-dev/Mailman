@@ -2,38 +2,61 @@ import express from "express";
 import redis from "../config/redis.js";
 import pool from "../config/db.js";
 import rateLimiter from "./middlewares/ratelimiter.js";
+import Authorize from "./middlewares/auth.js";
+import isValidWebhookUrl from "../utils/urlValidator.js";
 import { register, jobsIngestedTotal } from "../utils/metrics.js";
 import logger from "../utils/logger.js";
 
 const app = express();
 const port = 3000;
 
-app.use(express.json());
+app.use(express.json({ limit: "64kb" }));
 
-app.post("/", (req, res) => {
-  console.log(req.body);
-  res.end();
-});
-
-app.get("/metrics", async (req, res) => {
+app.get("/metrics", Authorize, async (req, res) => {
   try {
-    res.set("Content-Type", register.contentType)
-    const metricsData = await register.metrics()
-    res.end(metricsData)
+    res.set("Content-Type", register.contentType);
+    const metricsData = await register.metrics();
+    res.end(metricsData);
   } catch (error) {
-    console.log("Unable to monitor")
+    console.log("Unable to monitor");
   }
 });
 
-app.post("/v1/jobs", rateLimiter, async (req, res) => {
+app.get("/v1/jobs/:id", rateLimiter, Authorize, async (req, res) => {
   try {
-    const idempotencyKey = req.headers["idempotency-key"];
+    const jobId = req.params.id;
+    const response = await pool.query("SELECT * FROM jobs WHERE id = $1", [
+      jobId,
+    ]);
+    if (response.rows.length === 0) {
+      throw new Error("Job id is invalid!");
+    }
+    res.status(200).json(response.rows[0]);
+  } catch (error) {
+    console.log("Unable to fetch data from database!");
+    res.status(404).json({ error: error.message });
+  }
+});
+
+app.post("/v1/jobs", rateLimiter, Authorize, async (req, res) => {
+  let lockAcquired = false;
+  const idempotencyKey = req.headers["idempotency-key"];
+  try {
     const { service, target_url, payload } = req.body;
     if (!idempotencyKey || !service || !target_url || !payload) {
       const error = new Error("Bad Request");
       error.statusCode = 400;
       throw error;
     }
+
+    const isAllowed = await isValidWebhookUrl(target_url);
+    if (!isAllowed) {
+      return res.status(400).json({
+        error:
+          "Invalid target_url: Private or metadata addresses are prohibited",
+      });
+    }
+
     const result = await redis.set(
       `idempotency:${idempotencyKey}`,
       "PROCESSING",
@@ -46,6 +69,7 @@ app.post("/v1/jobs", rateLimiter, async (req, res) => {
       error.statusCode = 409;
       throw error;
     }
+    lockAcquired = true;
     const currentStatus = "QUEUED";
     const response = await pool.query(
       "INSERT INTO jobs (idempotency_key, service, target_url, payload, status) VALUES ($1, $2, $3, $4, $5) RETURNING id",
@@ -61,6 +85,8 @@ app.post("/v1/jobs", rateLimiter, async (req, res) => {
     const job_id = await redis.xadd(
       "task:stream",
       "*",
+      "idempotency_key",
+      idempotencyKey,
       "job_id",
       pgJobId,
       "service",
@@ -82,11 +108,14 @@ app.post("/v1/jobs", rateLimiter, async (req, res) => {
       error: error.message,
       status_code: error.statusCode || 500,
     });
+    if (lockAcquired && idempotencyKey) {
+      await redis.del(`idempotency:${idempotencyKey}`);
+    }
     res.status(error.statusCode || 500).json({ error: error.message });
   }
 });
 
-app.post("/v1/jobs/:id/replay", async (req, res) => {
+app.post("/v1/jobs/:id/replay", rateLimiter, Authorize, async (req, res) => {
   try {
     const { id } = req.params;
     const result = await pool.query("SELECT * FROM jobs WHERE id = $1", [id]);
