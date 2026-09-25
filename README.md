@@ -88,7 +88,7 @@ Mailman decouples ingestion from delivery safely: your app drops the job into Ma
 ### 1. Clone & Configure
 
 ```bash
-git clone https://github.com/<your-username>/mailman.git
+git clone https://github.com/Monis-dev/mailman.git
 cd mailman
 cp .env.example .env
 ```
