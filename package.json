@@ -8,6 +8,7 @@
   },
   "scripts": {
     "start": "node src/api/server.js",
+    "server": "node src/api/server.js",
     "worker": "node src/workers/mailman.js",
     "migrate": "node src/config/migrate.js",
     "test": "node test/run-all-chaos.js"
