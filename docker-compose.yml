@@ -1,15 +1,77 @@
 services:
+  # 1. High-Speed In-Memory Broker
   redis:
     image: redis:7-alpine
-    container_name: redis-container
-    ports: 
+    container_name: mailman-redis
+    command: redis-server --appendonly yes --appendfsync everysec
+    ports:
       - "6379:6379"
-  
+    restart: unless-stopped
+
+  # 2. Permanent Relational System of Record
   postgres:
     image: postgres:16-alpine
+    container_name: mailman-postgres
     ports:
       - "5432:5432"
     environment:
-      POSTGRES_USER: postgres     
+      POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: relayengine
+    volumes:
+      - ./src/config/schema.sql:/docker-entrypoint-initdb.d/init.sql
+    restart: unless-stopped
+
+  # 3. The Ingestion API Container
+  api:
+    build: .
+    container_name: mailman-api
+    command: node src/api/server.js
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - RELAY_API_KEY=relay_live_secret_key_999
+      - RATE_LIMIT_MAX=50000
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+      - DB_NAME=relayengine
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - NODE_ENV=production
+    depends_on:
+      - redis
+      - postgres
+    restart: unless-stopped
+
+  # 4. The Background Worker Container
+  worker:
+    build: .
+    container_name: mailman-worker
+    command: node src/workers/mailman.js
+    environment:
+      - STREAM_KEY=task:stream
+      - GROUP_NAME=worker-group
+      - WEBHOOK_SECRET=whsec_default_secrete_key
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+      - DB_NAME=relayengine
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - NODE_ENV=production
+    depends_on:
+      - redis
+      - postgres
+    restart: unless-stopped
+
+  # 5. Network Chaos Testing Proxy
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.9.0
+    container_name: mailman-toxiproxy
+    ports:
+      - "8474:8474"
+      - "8500:8500"

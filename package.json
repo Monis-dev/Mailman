@@ -1,5 +1,17 @@
 {
+  "name": "mailman",
+  "version": "1.0.0",
   "type": "module",
+  "main": "src/sdk/index.js",
+  "exports": {
+    ".": "./src/sdk/index.js"
+  },
+  "scripts": {
+    "start": "node src/api/server.js",
+    "worker": "node src/workers/mailman.js",
+    "migrate": "node src/config/migrate.js",
+    "test": "node test/run-all-chaos.js"
+  },
   "dependencies": {
     "dotenv": "^17.4.2",
     "express": "^5.2.1",

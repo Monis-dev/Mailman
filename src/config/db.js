@@ -6,11 +6,13 @@ dotenv.config();
 const pool = new pg.Pool({
   max: 50,
   idleTimeoutMillis: 30000,
-  host: process.env.HOST || "localhost",
-  port: Number(process.env.PORT) || 5432,
-  user: process.env.USER || "postgres",
-  password: String(process.env.PASSWORD || "postgres"),
-  database: process.env.DATABASE || "relayengine",
+  host: process.env.DB_HOST || process.env.HOST || "localhost",
+  port: Number(process.env.DB_PORT) || 5432,
+  user: process.env.DB_USER || process.env.USER || "postgres",
+  password: String(
+    process.env.DB_PASSWORD || process.env.PASSWORD || "postgres",
+  ),
+  database: process.env.DB_NAME || process.env.DATABASE || "relayengine",
 });
 
 pool.on("error", (err) => {

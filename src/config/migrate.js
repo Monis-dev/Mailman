@@ -1,18 +1,13 @@
-import pg from "pg";
 import { readFile } from "node:fs/promises";
-import dotenv from "dotenv";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import pool from "./db.js"; 
 
-dotenv.config();
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const sql = await readFile(path.join(__dirname, "schema.sql"), "utf-8");
 
-const pool = new pg.Pool({
-  host: process.env.HOST || "localhost",
-  port: Number(process.env.PORT) || 5432,
-  user: process.env.USER || "postgres",
-  password: String(process.env.PASSWORD || "postgres"),
-  database: process.env.DATABASE || "relayengine",
-});
-const sql = await readFile("schema.sql", "utf-8");
-
+console.log("[MIGRATE] Applying schema.sql to PostgreSQL...");
 await pool.query(sql);
+console.log("[MIGRATE] Schema applied successfully!");
 
-pool.end();
+await pool.end();
