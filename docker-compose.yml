@@ -31,7 +31,7 @@ services:
       - "3000:3000"
     environment:
       - PORT=3000
-      - RELAY_API_KEY=relay_live_secret_key_999
+      - RELAY_API_KEY=mail_man_secret_key_0909
       - RATE_LIMIT_MAX=50000
       - DB_HOST=postgres
       - DB_PORT=5432
@@ -54,7 +54,7 @@ services:
     environment:
       - STREAM_KEY=task:stream
       - GROUP_NAME=worker-group
-      - WEBHOOK_SECRET=whsec_default_secrete_key
+      - WEBHOOK_SECRET=mail001_man_webhook_qwssermxmx110
       - DB_HOST=postgres
       - DB_PORT=5432
       - DB_USER=postgres
