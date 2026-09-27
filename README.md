@@ -4,9 +4,16 @@
 
 Mailman lets your backend offload slow, unreliable operations (transactional emails, third-party webhooks, CRM syncs) in under **15ms**, while guaranteeing background delivery with exponential backoff, atomic deduplication, and crash recovery.
 
-<!-- DEMO_VIDEO_PLACEHOLDER -->
-<!-- [![Demo](./assets/demo-thumbnail.png)](https://your-video-link) -->
-<!-- or embed a GIF: ![demo](./assets/demo.gif) -->
+
+
+https://github.com/user-attachments/assets/f0f9cf72-24a9-4b6d-a671-caa3ecae8f92
+
+
+
+https://github.com/user-attachments/assets/101474bb-4b6f-46a5-9409-d867d082d8c1
+
+
+
 
 ---
 
