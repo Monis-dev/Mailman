@@ -7,6 +7,11 @@ services:
     ports:
       - "6379:6379"
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 5
 
   # 2. Permanent Relational System of Record
   postgres:
@@ -21,6 +26,24 @@ services:
     volumes:
       - ./src/config/schema.sql:/docker-entrypoint-initdb.d/init.sql
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 3s
+      timeout: 3s
+      retries: 5
+  
+  migrate:
+    build: .
+    command: node src/config/migrate.js
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+      - DB_NAME=relayengine
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   # 3. The Ingestion API Container
   api:
@@ -40,11 +63,15 @@ services:
       - DB_NAME=relayengine
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - NODE_ENV=production
+      - NODE_ENV=development
     depends_on:
-      - redis
-      - postgres
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   # 4. The Background Worker Container
   worker:
@@ -62,11 +89,15 @@ services:
       - DB_NAME=relayengine
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - NODE_ENV=production
+      - NODE_ENV=development
     depends_on:
-      - redis
-      - postgres
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   # 5. Network Chaos Testing Proxy
   toxiproxy:
@@ -75,3 +106,24 @@ services:
     ports:
       - "8474:8474"
       - "8500:8500"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  test-runner:
+    build: .
+    command: node test/run-all-chaos.js
+    environment:
+      - RELAY_API_KEY=mail_man_secret_key_0909
+      - WEBHOOK_SECRET=mail001_man_webhook_qwssermxmx110
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+      - DB_NAME=relayengine
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - GROUP_NAME=worker-group
+    depends_on:
+      - api
+      - worker
+    profiles: ["test"]

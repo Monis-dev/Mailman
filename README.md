@@ -194,9 +194,12 @@ node test/benchmark.js
 | Throughput | ~737.15 req/sec |
 | Status Codes | 14,743 `202 Accepted` (100% non-rate-limited success) |
 | P50 Latency | 66 ms |
-| P97.5 Latency | 86 ms |
-| P99 Latency | 94 ms |
+| P95 Latency | 78 ms |
+| P99 Latency | 97.8 ms |
 
+Also tested with the industry-standard tools rather than only a custom harness — [k6](https://k6.io) for load testing and [Toxiproxy](https://github.com/Shopify/toxiproxy) for real network fault injection (latency, not just simulated failure). Install steps and how to run both yourself are in [`docs/TESTING.md`](./docs/TESTING.md). Full results, including the k6 threshold pass/fail table and the Toxiproxy latency-injection run, are in [`BENCHMARK.md`](./BENCHMARK.md).
+
+> **After running any test suite, clean up.** Test runs leave data in Redis and Postgres — stale locks, tripped circuit breakers, leftover job rows — that can affect later test runs or real usage if left behind. See [`docs/CLEANUP.md`](./docs/CLEANUP.md).
 
 ---
 

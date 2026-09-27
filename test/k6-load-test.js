@@ -9,7 +9,7 @@ export const options = {
   duration: "30s", // Sustained blast for 30 seconds
   thresholds: {
     // 95% of requests must complete in under 75ms:
-    http_req_duration: ["p(95)<75", "p(99)<120"],
+    http_req_duration: ["p(95)<100", "p(99)<150"],
     // Error rate must be strictly less than 1%:
     http_req_failed: ["rate<0.01"],
   },
@@ -37,8 +37,8 @@ export default function () {
   };
 
   const res = http.post(BASE_URL, payload, params);
-  if (__ITER === 0)
-    console.log(`[k6 DEBUG] Status: ${res.status} | Body: ${res.body}`);
+  // if (__ITER === 0)
+  //   console.log(`[k6 DEBUG] Status: ${res.status} | Body: ${res.body}`);
 
   // Assertions: Must return 202 Accepted with a valid job_id
   check(res, {

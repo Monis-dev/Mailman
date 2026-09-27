@@ -321,10 +321,42 @@ async function proofWorkerRecovery() {
 // ---------------------------------------------------------------------
 // Run everything, print a scorecard, exit non-zero on any failure
 // ---------------------------------------------------------------------
+// ---------------------------------------------------------------------
+// Cleanup — wipe transient Redis state and this suite's own Postgres rows
+// so leftover test data never leaks into real usage or the next run.
+//
+// WARNING: redis.flushall() wipes the ENTIRE Redis instance, not just
+// test keys. Only safe because this suite assumes a dedicated local/dev
+// Redis. NEVER point this script at a shared or production Redis — it
+// will destroy real data, not just test leftovers.
+// ---------------------------------------------------------------------
+const TEST_SERVICES = [
+  "test-delivery",
+  "test-concurrency",
+  "test-idempotency",
+  "test-circuit",
+  "test-recovery",
+];
+
+async function cleanup() {
+  await redis.flushall();
+
+  // Postgres is the permanent audit log — don't truncate the whole table,
+  // just remove the rows this suite itself created.
+  await pool.query(
+    "DELETE FROM job_attempts WHERE job_id IN (SELECT id FROM jobs WHERE service = ANY($1))",
+    [TEST_SERVICES],
+  );
+  await pool.query("DELETE FROM jobs WHERE service = ANY($1)", [TEST_SERVICES]);
+}
+
 async function main() {
   console.log(
     "RelayEngine chaos suite — requires server + Redis + Postgres running\n",
   );
+
+  console.log("Clearing any state left over from a previous run...");
+  await cleanup();
 
   await runProof("Ingestion & delivery", proofIngestionAndDelivery);
   await runProof(
@@ -344,6 +376,9 @@ async function main() {
 
   const failed = results.filter((r) => r.status === "FAIL").length;
   console.log(`${results.length - failed} passed, ${failed} failed`);
+
+  console.log("\nCleaning up test data...");
+  await cleanup();
 
   receiver.close();
   await pool.end();

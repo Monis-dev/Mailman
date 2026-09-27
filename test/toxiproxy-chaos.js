@@ -96,7 +96,7 @@ async function runChaos() {
     console.log("[2/3] Dispatching task through clean Toxiproxy route...");
     await relay.dispatch({
       service: "toxiproxy-test",
-      target_url: `http://127.0.0.1:${PROXY_PORT}/webhook`,
+      target_url: `http://toxiproxy:${PROXY_PORT}/webhook`,
       payload: { test: "clean" },
       idempotencyKey: `toxi-clean-${Date.now()}`,
     });
@@ -118,7 +118,7 @@ async function runChaos() {
     const t0 = performance.now();
     await relay.dispatch({
       service: "toxiproxy-test",
-      target_url: `http://127.0.0.1:${PROXY_PORT}/webhook`,
+      target_url: `http://toxiproxy:${PROXY_PORT}/webhook`,
       payload: { test: "chaotic" },
       idempotencyKey: `toxi-chaos-${Date.now()}`,
     });

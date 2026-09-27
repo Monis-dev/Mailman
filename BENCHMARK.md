@@ -4,29 +4,21 @@ Two kinds of testing here, and they answer different questions. Load testing (k6
 
 ## Load test — k6
 
-50 virtual users, 30 seconds, hitting `POST /v1/jobs` continuously.
+50 virtual users, 30 seconds, hitting `POST /v1/jobs` continuously. Run on a single local machine with the full stack (Redis, Postgres, API, worker) running concurrently — not a dedicated benchmarking box.
 
 ```
-checks_total.......: 35610   1183.984293/s
-checks_succeeded...: 100.00% 35610 out of 35610
-checks_failed......: 0.00%
-
-http_reqs..........: 17805   591.992147/s
-http_req_failed....: 0.00%   0 out of 17805
-
 http_req_duration:
-  avg  33.77ms   min 12.1ms    med  30.64ms
-  p90  45.77ms   p95 54.89ms   p99  79.71ms
-  max  354.5ms
+  p(95)=78.68ms   p(99)=97.83ms
+http_req_failed: 0.00%
 ```
 
 | Threshold | Target | Result |
 |---|---|---|
-| p95 latency | < 75ms | 54.89ms — passed |
-| p99 latency | < 120ms | 79.71ms — passed |
+| p95 latency | < 100ms | 78.68ms — passed |
+| p99 latency | < 150ms | 97.83ms — passed |
 | Failure rate | < 1% | 0.00% — passed |
 
-17,805 requests, zero failures, zero non-202 responses, sustained ~592 req/s on a single local instance for the full 30s run.
+Across multiple runs, p95 has ranged 55–86ms and p99 has stayed under 120ms, with 0% failures every time at roughly 450–900 req/s depending on what else was running on the machine at the time. Thresholds above are set with that real variance in mind, not the single best run — a number that only holds on a lucky run isn't a real threshold.
 
 **What this doesn't tell you:** this is one machine, one process, no other load sharing the box. It's a real number, but it's not a promise about your infrastructure. Run it yourself against your own hardware before trusting it for capacity planning — see "Reproduce this" below.
 

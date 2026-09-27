@@ -1,14 +1,15 @@
+// Lightweight structured JSON logger for uniform log formats across services.
 function log(level, event, meta = {}) {
-    const logEntry = {
-      level,
-      event,
-      ...meta
-    };
-    if (level === "ERROR") {
-        console.error(JSON.stringify(logEntry))
-    } else {
-        console.log(JSON.stringify(logEntry))
-    }
+  const logEntry = {
+    level,
+    event,
+    ...meta,
+  };
+  if (level === "ERROR") {
+    console.error(JSON.stringify(logEntry));
+  } else {
+    console.log(JSON.stringify(logEntry));
+  }
 }
 const logger = {
   info: (event, meta) => log("INFO", event, meta),
@@ -16,4 +17,4 @@ const logger = {
   error: (event, meta) => log("ERROR", event, meta),
 };
 
-export default logger
+export default logger;

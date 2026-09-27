@@ -1,3 +1,5 @@
+// Worker process: Consumes tasks from Redis Stream, executes webhook HTTP requests, handles retries, and recovers stuck jobs.
+
 import redis from "../config/redis.js";
 import pool from "../config/db.js";
 import {
@@ -18,13 +20,16 @@ dotenv.config();
 
 const STREAM_KEY = process.env.STREAM_KEY;
 const GROUP_NAME = process.env.GROUP_NAME;
-const CONSUMER_NAME = process.env.CONSUMER_NAME || `worker-${process.pid}-${crypto.randomBytes(4).toString("hex")}`
+const CONSUMER_NAME =
+  process.env.CONSUMER_NAME ||
+  `worker-${process.pid}-${crypto.randomBytes(4).toString("hex")}`;
 const MAX_ATTEMPTS = 3;
 let isPollingDelay = false;
 let isRecovering = false;
 const WEBHOOK_SECRET =
   process.env.WEBHOOK_SECRET || "whsec_default_secrete_key";
 
+  // Create the consumer group on the Redis stream if it doesn't already exist
 try {
   await redis.xgroup("CREATE", STREAM_KEY, GROUP_NAME, "0", "MKSTREAM");
   console.log(`Created group "${GROUP_NAME}" on stream "${STREAM_KEY}"`);
@@ -36,9 +41,11 @@ try {
   }
 }
 
+// Core delivery pipeline: handles circuit checking, webhook signing, HTTP dispatch, and retry/DLQ scheduling
 async function processJob(messageId, rawFields) {
   try {
     const fields = {};
+    // Redis returns stream fields as flat key-value arrays; convert them into an object
     for (let i = 0; i < rawFields.length; i += 2) {
       fields[rawFields[i]] = rawFields[i + 1];
     }
@@ -47,6 +54,7 @@ async function processJob(messageId, rawFields) {
     const currentAttempt = fields.attempts ? parseInt(fields.attempts, 10) : 0;
     const startTime = performance.now();
     try {
+      // Check if the destination domain circuit is open; if so, delay execution by 30s
       const isAllowed = await canExecute(domain);
       if (!isAllowed) {
         const wakeUpTime = Date.now() + 30000;
@@ -67,16 +75,19 @@ async function processJob(messageId, rawFields) {
         return;
       }
       const timestamp = Date.now();
+      // Generate an HMAC signature so the webhook receiver can verify authenticity
       const signature = crypto
         .createHmac("sha256", WEBHOOK_SECRET)
         .update(`${timestamp}.${fields.payload}`)
         .digest("hex");
-      const isSafeUrl = await isValidWebhookUrl(fields.target_url)
+      // Re-verify URL at runtime to prevent SSRF attacks against internal network hosts
+      const isSafeUrl = await isValidWebhookUrl(fields.target_url);
       if (!isSafeUrl) {
         throw new Error(
           "SSRF Guard: Target URL resolved to a blocked IP address",
         );
       }
+      // Dispatch the webhook payload with idempotency, signature, and attempt headers
       const response = await fetch(fields.target_url, {
         method: "POST",
         headers: {
@@ -97,6 +108,7 @@ async function processJob(messageId, rawFields) {
         { service: fields.service, domain },
         durationMs / 1000,
       );
+      // Log the successful execution attempt and update the job status in PostgreSQL
       await pool.query(
         "INSERT INTO job_attempts (job_id, attempt_number, response_status_code, execution_duration_ms, error_message) VALUES ($1, $2, $3, $4, $5);",
         [job_id, currentAttempt + 1, response.status, durationMs, null],
@@ -105,6 +117,7 @@ async function processJob(messageId, rawFields) {
         "UPDATE jobs SET status = 'COMPLETED', updated_at = NOW() WHERE id = $1",
         [job_id],
       );
+      // Reset circuit breaker failure count and acknowledge the message in Redis
       await recordSuccess(domain);
       await redis.xack(STREAM_KEY, GROUP_NAME, messageId);
 
@@ -126,6 +139,7 @@ async function processJob(messageId, rawFields) {
         [job_id, nextAttempt, null, durationMs, error.message],
       );
       await recordFailure(domain);
+      // If the maximum retry attempts are exhausted, move the job to the Dead Letter Queue
       if (nextAttempt >= MAX_ATTEMPTS) {
         await redis.xadd(
           "task:dlq",
@@ -158,6 +172,7 @@ async function processJob(messageId, rawFields) {
           error: error.message,
         });
       } else {
+        // Schedule a retry with exponential backoff plus random jitter to avoid thundering herds
         const delay =
           1000 * 2 ** currentAttempt + Math.floor(Math.random() * 500);
         const wakeUpTime = Date.now() + delay;
@@ -173,6 +188,7 @@ async function processJob(messageId, rawFields) {
             attempts: nextAttempt,
           }),
         );
+        // Store retry in a sorted set scored by timestamp, then acknowledge the current message
         await redis.xack(STREAM_KEY, GROUP_NAME, messageId);
         console.log(
           `Job ${messageId} failed. Scheduling retry #${nextAttempt}`,
@@ -185,6 +201,7 @@ async function processJob(messageId, rawFields) {
   }
 }
 
+// Continuously poll the Redis stream for new pending messages assigned to this consumer
 async function startWorker() {
   while (true) {
     try {
@@ -208,16 +225,25 @@ async function startWorker() {
         }
       }
     } catch (error) {
-      console.log(error.message);
+      // Auto-heal: recreate consumer group if it was accidentally dropped or flushed
+      if (error.message.includes("NOGROUP")) {
+        await redis
+          .xgroup("CREATE", STREAM_KEY, GROUP_NAME, "0", "MKSTREAM")
+          .catch(() => {});
+      } else {
+        console.error("[WORKER ERROR]:", error.message);
+      }
     }
   }
 }
 
+// Periodically checks the delayed sorted set and moves due jobs back to the main processing stream
 async function pollDelayJobs() {
   if (isPollingDelay) return;
   isPollingDelay = true;
   try {
     const now = Date.now();
+    // Fetch all jobs whose wake-up time is less than or equal to current timestamp
     const readyJobs = await redis.zrangebyscore("task:delayed", 0, now);
     if (readyJobs.length === 0) return;
     for (const jobString of readyJobs) {
@@ -250,10 +276,12 @@ async function pollDelayJobs() {
   }
 }
 
+// Reclaim jobs that have been pending for over 5 seconds from crashed or unresponsive workers
 async function recoverStuckjobs() {
   if (isRecovering) return;
   isRecovering = true;
   try {
+    // Transfer ownership of abandoned messages to this worker
     const result = await redis.xautoclaim(
       STREAM_KEY,
       GROUP_NAME,
